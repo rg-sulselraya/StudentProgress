@@ -79,7 +79,7 @@
   // Saat disajikan oleh server, gunakan path relatif agar tetap portabel.
   const API_BASE=location.protocol==='file:'?'http://127.0.0.1:4173':'';
   const IS_GITHUB_PAGES=/\.github\.io$/i.test(location.hostname);
-  const APPS_SCRIPT_STUDENT_URL='https://script.google.com/macros/s/AKfycbxGHMXTYdzfcaPFQHhSKTZaZ0ir0uz216CAPCWYO4GqJdVHA9Xc4hSyEVubQv_-dSK4/exec';
+  const APPS_SCRIPT_STUDENT_URL='https://script.google.com/macros/s/AKfycbxiApfLe9MmZIb29VvnjMeTH_ZKrny1CKzHj0K_IQ4uR5_MgpUHQkrguKXeL0Doi4Iw/exec';
   function studentsApiUrl(force=false){return IS_GITHUB_PAGES?APPS_SCRIPT_STUDENT_URL+'?action=students'+(force?'&refresh=1':''):API_BASE+'/api/students'+(force?'?refresh=1':'')}
   function studentsDiagnosticUrl(){return IS_GITHUB_PAGES?APPS_SCRIPT_STUDENT_URL+'?action=test':API_BASE+'/api/students/test'}
   function submissionsApiUrl(){return IS_GITHUB_PAGES?APPS_SCRIPT_STUDENT_URL+'?action=submissions':API_BASE+'/api/submissions'}
