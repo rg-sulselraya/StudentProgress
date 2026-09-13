@@ -81,7 +81,7 @@ async function readStudents() {
       let lastError;
       for (let attempt = 1; attempt <= 2; attempt += 1) {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 60_000);
+        const timeout = setTimeout(() => controller.abort(), 30_000);
         try {
           console.log(`[STUDENT DATA] Apps Script request attempt ${attempt}/2...`);
           response = await fetch(endpoint, { redirect: 'follow', signal: controller.signal, headers: { 'Accept': 'application/json,text/plain,*/*', 'User-Agent': 'StudentProgressBackend/1.0' } });
