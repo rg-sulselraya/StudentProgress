@@ -76,13 +76,35 @@ async function readStudents() {
   if (APPS_SCRIPT_URL) {
     console.log('[STUDENT DATA] Provider: Google Apps Script');
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30_000);
+      const endpoint = APPS_SCRIPT_URL + (APPS_SCRIPT_URL.includes('?') ? '&' : '?') + 'action=students';
       let response;
-      try {
-        response = await fetch(APPS_SCRIPT_URL + (APPS_SCRIPT_URL.includes('?') ? '&' : '?') + 'action=students', { redirect: 'follow', signal: controller.signal });
-      } finally { clearTimeout(timeout); }
-      const payload = await response.json();
+      let lastError;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 60_000);
+        try {
+          console.log(`[STUDENT DATA] Apps Script request attempt ${attempt}/2...`);
+          response = await fetch(endpoint, { redirect: 'follow', signal: controller.signal, headers: { 'Accept': 'application/json,text/plain,*/*', 'User-Agent': 'StudentProgressBackend/1.0' } });
+          if (response.ok) break;
+          lastError = new Error(`Apps Script HTTP ${response.status}`);
+        } catch (err) { lastError = err; }
+        finally { clearTimeout(timeout); }
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      if (!response) throw lastError || new Error('Apps Script tidak merespons.');
+      const rawBody = await response.text();
+      let payload;
+      try { payload = JSON.parse(rawBody); }
+      catch (_) {
+        // Some Apps Script deployments prepend a short HTML wrapper before
+        // the JSON body. Recover the JSON object instead of treating it as a
+        // successful HTML page with no student data.
+        const starts = [rawBody.indexOf('{"connected"'), rawBody.indexOf('{"students"')].filter(i => i >= 0);
+        const start = starts.length ? Math.min(...starts) : -1;
+        const end = rawBody.lastIndexOf('}');
+        if (start < 0 || end <= start) throw new Error('Respons Apps Script bukan JSON yang valid.');
+        payload = JSON.parse(rawBody.slice(start, end + 1));
+      }
       if (!response.ok || payload.connected === false || !Array.isArray(payload.students)) throw apiError(payload.error || 'Apps Script tidak mengembalikan data siswa.', payload.details || 'Periksa deployment Web App Apps Script.');
       // Apps Script returns raw rows; apply the same server-side programme
       // filter used by the direct Google Sheets path.
