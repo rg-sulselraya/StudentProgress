@@ -56,7 +56,7 @@ function existingScans_(sheet) { const values = sheet.getDataRange().getDisplayV
 function doGet(e) {
   try {
     const action = (e && e.parameter && e.parameter.action) || 'students';
-    if (action === 'submissions') { const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SCAN_SHEET_NAME); if (sheet) ensureScanMetadataColumns_(sheet); return json_({submissions:sheet ? existingScans_(sheet) : []}); }
+    if (action === 'submissions') { const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SCAN_SHEET_NAME); if (sheet) ensureScanMetadataColumns_(sheet); const rows = sheet ? existingScans_(sheet) : []; return json_({success:true,data:rows,submissions:rows}); }
     const data = students_();
     if (action === 'test') return json_({connected:true,spreadsheetId:SPREADSHEET_ID,sheetName:SHEET_NAME,range:SHEET_NAME+'!A:F',rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,headers:data.headers,classCounts:data.classCounts,classNames:data.classNames,skippedRows:data.skippedRows,sampleStudents:data.students.slice(0,3).map(s => ({studentCode:s.studentCode,name:s.name,className:s.className,studyDays:s.studyDays,schoolName:s.schoolName})),studentsLoaded:data.students.length});
     return json_({students:data.students,source:'google_apps_script',sheetName:SHEET_NAME,headers:data.headers,rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,classCounts:data.classCounts,classNames:data.classNames});

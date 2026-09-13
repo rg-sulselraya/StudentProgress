@@ -241,7 +241,7 @@ const server = http.createServer(async (req, res) => {
       if (code) { const student = students.find(s => s.studentCode === decodeURIComponent(code)); return student ? json(res, 200, student) : json(res, 404, { error: 'Siswa tidak ditemukan.' }); }
       return json(res, 200, { students, source: 'google_sheets', sheetName: SHEET_NAME });
     }
-    if (req.method === 'GET' && req.url.startsWith('/api/submissions')) return json(res, 200, { submissions: loadSubmissions().map(enrichSubmission) });
+    if (req.method === 'GET' && req.url.startsWith('/api/submissions')) { const submissions = loadSubmissions().map(enrichSubmission); return json(res, 200, { success: true, data: submissions, submissions }); }
     if (req.method === 'POST' && req.url === '/api/submissions') {
       const body = await readBody(req); const students = await getStudents(); const student = students.find(s => s.studentCode === body.studentCode); if (!student) return json(res, 404, { error: 'Student code tidak ditemukan.' });
       const scannedAt = body.scannedAt ? new Date(body.scannedAt) : new Date();
