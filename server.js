@@ -12,59 +12,42 @@ const SPREADSHEET_ID = '1FcnkMsR24hU6A-bF5BYil2AX5iq-Ib38-Ta0dN_luBM';
 const SHEET_NAME = process.env.GOOGLE_SHEETS_STUDENT_SHEET_NAME || 'siswa';
 const CREDENTIALS = process.env.GOOGLE_APPLICATION_CREDENTIALS;
 const APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL;
-const FILTERED_PROGRAMS = ['12 Kurmer', 'SIAP SNBT', 'SNBT Kedinasan'];
 const DATA_DIR = path.join(__dirname, 'data');
 const SUBMISSIONS_FILE = path.join(DATA_DIR, 'submissions.json');
 
 function apiError(message, details) { const e = new Error(message); e.details = details; return e; }
 function normalize(value) { return String(value || '').trim().toLowerCase(); }
-function splitDays(value) {
-  const aliases = { sen:'Senin', senin:'Senin', sel:'Selasa', selasa:'Selasa', rab:'Rabu', rabu:'Rabu', kam:'Kamis', kamis:'Kamis', jum:'Jumat', jumat:'Jumat', sab:'Sabtu', sabtu:'Sabtu', min:'Minggu', minggu:'Minggu' };
-  return String(value || '').split(/[,;|/]/).map(x => aliases[normalize(x)]).filter(Boolean).filter((x, i, a) => a.indexOf(x) === i);
-}
-function stableCode(row) {
-  const identity = normalize(row.email) || [row.name, row.className, row.schoolName].map(normalize).join('|');
-  return 'STD-' + crypto.createHash('sha256').update(identity || JSON.stringify(row)).digest('hex').slice(0, 8).toUpperCase();
-}
 function headerIndex(headers, names) {
   return headers.findIndex(header => names.some(name => normalize(header).replace(/[^a-z0-9]/g, '').includes(name)));
 }
-// rowCount/totalRows always describe the raw data rows read from the sheet.
-// studentsLoaded describes the rows that remain after the server-side category filter.
-let lastSheetMeta = { headers: [], rowCount: 0, totalRows: 0, rowsRead: 0, rangeRowsRead: 0, studentsLoaded: 0, classCounts: {}, classNames: [], programCounts: {}, excludedRows: 0 };
+// rowCount/totalRows describe raw non-empty rows read from the sheet.
+// studentsLoaded describes valid rows after User Serial/name/class validation.
+let lastSheetMeta = { headers: [], rowCount: 0, totalRows: 0, rowsRead: 0, rangeRowsRead: 0, studentsLoaded: 0, classCounts: {}, classNames: [], excludedRows: 0, warnings: { emptyUserSerial: 0, duplicateUserSerial: 0, emptyName: 0, emptyClass: 0, invalidRows: [] } };
 function normalizeClassName(value) { return String(value || '').trim(); }
-function classifyProgram(value) {
-  const normalized = normalizeClassName(value).replace(/\s+/g, ' ').toUpperCase();
-  if (/^12 KURMER(?:\s|$)/.test(normalized)) return '12 Kurmer';
-  if (/^SIAP SNBT(?:\s|$)/.test(normalized)) return 'SIAP SNBT';
-  if (/^SNBT KEDINASAN(?:\s|$)/.test(normalized)) return 'SNBT Kedinasan';
-  return null;
-}
 function normalizeStudents(students, totalRows) {
   const classCounts = {};
-  const programCounts = Object.fromEntries(FILTERED_PROGRAMS.map(program => [program, 0]));
-  const used = new Set();
+  const serialCounts = {};
+  (students || []).forEach(student => { const code = String(student.studentCode || student.userSerial || '').trim(); if (code) serialCounts[code] = (serialCounts[code] || 0) + 1; });
+  const warnings = {emptyUserSerial:0,duplicateUserSerial:0,emptyName:0,emptyClass:0,invalidRows:[]};
   const normalized = (students || []).map(student => {
     const name = String(student.name || '').trim();
     const className = normalizeClassName(student.className);
-    const program = classifyProgram(className);
-    if (!name || !className || !program) return null;
-    let studentCode = String(student.studentCode || '').trim();
-    const source = { ...student, name, className, program, email: String(student.email || '').trim(), schoolName: String(student.schoolName || '').trim(), active: true };
-    if (!Array.isArray(source.studyDays)) source.studyDays = splitDays(source.days);
-    if (!studentCode) studentCode = stableCode(source);
-    const baseCode = studentCode;
-    let suffix = 0;
-    while (used.has(studentCode)) { suffix += 1; studentCode = baseCode + suffix; }
-    used.add(studentCode);
+    const studentCode = String(student.studentCode || student.userSerial || '').trim();
+    if (!studentCode) warnings.emptyUserSerial++;
+    if (studentCode && serialCounts[studentCode] > 1) warnings.duplicateUserSerial++;
+    if (!name) warnings.emptyName++;
+    if (!className) warnings.emptyClass++;
+    const invalid = !studentCode || serialCounts[studentCode] > 1 || !name || !className;
+    if (invalid) { warnings.invalidRows.push(student.rowNumber || null); return null; }
+    const source = { ...student, studentCode, name, studentName: name, className, schoolName: String(student.schoolName || '').trim(), grade: String(student.grade || '').trim(), active: true };
+    delete source.email; delete source.paymentDate; delete source.days; delete source.studyDays;
     classCounts[className] = (classCounts[className] || 0) + 1;
-    programCounts[program] += 1;
-    return { ...source, studentCode };
+    return source;
   }).filter(Boolean);
   lastSheetMeta.classCounts = classCounts;
   lastSheetMeta.classNames = Object.keys(classCounts).sort((a, b) => a.localeCompare(b));
-  lastSheetMeta.programCounts = programCounts;
   lastSheetMeta.excludedRows = Math.max(0, (totalRows ?? students?.length ?? 0) - normalized.length);
+  lastSheetMeta.warnings = warnings;
   return normalized;
 }
 
@@ -107,15 +90,14 @@ async function readStudents() {
       }
       const upstreamStudents = payload.students ?? payload.data;
       if (!response.ok || payload.success !== true || payload.connected === false || !Array.isArray(upstreamStudents)) throw apiError(payload.message || payload.error || 'Apps Script tidak mengembalikan data siswa.', payload.details || 'Periksa deployment Web App Apps Script versi terbaru.');
-      // Apps Script returns raw rows; apply the same server-side programme
-      // filter used by the direct Google Sheets path.
+      // Apps Script returns normalized rows from the latest five-column schema.
       const totalRows = payload.rowCount ?? upstreamStudents.length;
       const students = normalizeStudents(upstreamStudents, totalRows);
-      lastSheetMeta = { headers: payload.headers || [], rowCount: totalRows, totalRows, rowsRead: totalRows, rangeRowsRead: payload.rangeRowsRead ?? payload.rowsRead ?? totalRows, studentsLoaded: students.length, skippedRows: payload.skippedRows || [], classCounts: lastSheetMeta.classCounts, classNames: lastSheetMeta.classNames, programCounts: lastSheetMeta.programCounts, excludedRows: lastSheetMeta.excludedRows };
+      lastSheetMeta = { headers: payload.headers || [], rowCount: totalRows, totalRows, rowsRead: totalRows, rangeRowsRead: payload.rangeRowsRead ?? payload.rowsRead ?? totalRows, studentsLoaded: students.length, skippedRows: payload.skippedRows || [], classCounts: lastSheetMeta.classCounts, classNames: lastSheetMeta.classNames, warnings: payload.warnings || lastSheetMeta.warnings, excludedRows: lastSheetMeta.excludedRows };
       console.log('[STUDENT DATA] Headers:', (lastSheetMeta.headers || []).join(' | '));
       console.log('[STUDENT DATA] Rows found:', lastSheetMeta.totalRows);
-      console.log('[STUDENT DATA] Program counts:', JSON.stringify(lastSheetMeta.programCounts));
       console.log('[STUDENT DATA] Classes included:', JSON.stringify(lastSheetMeta.classCounts));
+      console.log('[STUDENT DATA] Validation warnings:', JSON.stringify(lastSheetMeta.warnings));
       console.log('[STUDENT DATA] Excluded:', lastSheetMeta.excludedRows);
       console.log('[STUDENT DATA] Students loaded:', students.length);
       return students;
@@ -134,7 +116,7 @@ async function readStudents() {
   const sheets = google.sheets({ version: 'v4', auth });
   let values;
   try {
-    const response = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:F`, majorDimension: 'ROWS' });
+    const response = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${SHEET_NAME}!A:E`, majorDimension: 'ROWS' });
     values = response.data.values || [];
   } catch (err) {
     const reason = err?.code === 403 ? 'Service Account tidak memiliki akses. Bagikan spreadsheet kepada email Service Account dengan akses Viewer.' : err?.code === 404 ? `Sheet ${SHEET_NAME} tidak ditemukan atau Spreadsheet ID salah.` : 'Pastikan Google Sheets API aktif dan Service Account memiliki akses Viewer.';
@@ -143,26 +125,21 @@ async function readStudents() {
   if (values.length < 1) { console.log('[STUDENT DATA] Rows found: 0'); return []; }
   const headers = values[0];
   const totalRows = Math.max(0, values.length - 1);
-  lastSheetMeta = { headers, rowCount: totalRows, totalRows, rowsRead: totalRows, rangeRowsRead: totalRows, studentsLoaded: 0, classCounts: {}, classNames: [], programCounts: {}, excludedRows: 0 };
+  lastSheetMeta = { headers, rowCount: totalRows, totalRows, rowsRead: totalRows, rangeRowsRead: totalRows, studentsLoaded: 0, classCounts: {}, classNames: [], excludedRows: 0, warnings: { emptyUserSerial: 0, duplicateUserSerial: 0, emptyName: 0, emptyClass: 0, invalidRows: [] } };
   console.log('[STUDENT DATA] Headers:', headers.join(' | '));
   const indexes = {
-    name: headerIndex(headers, ['namasiswa', 'nama']), email: headerIndex(headers, ['emailsiswa', 'email']),
-    className: headerIndex(headers, ['kelas']), paymentDate: headerIndex(headers, ['tanggalbayar', 'bayar']),
-    days: headerIndex(headers, ['haribelajar', 'jadwal']), schoolName: headerIndex(headers, ['namasekolah', 'sekolah'])
+    studentCode: headerIndex(headers, ['userserial']), name: headerIndex(headers, ['namasiswa']),
+    schoolName: headerIndex(headers, ['namasekolah']), grade: headerIndex(headers, ['grade']), className: headerIndex(headers, ['kelas'])
   };
-  if (indexes.name < 0 || indexes.className < 0 || indexes.days < 0 || indexes.schoolName < 0) {
-    throw apiError('Header Google Sheet tidak cocok.', `Header terbaca: ${headers.join(' | ')}. Wajib memiliki: Nama Siswa, Email Siswa, Kelas, Tanggal Bayar, Hari belajar, Nama Sekolah.`);
+  if (Object.values(indexes).some(index => index < 0)) {
+    throw apiError('Header sheet siswa tidak sesuai struktur database terbaru.', `Header terbaca: ${headers.join(' | ')}. Wajib memiliki: User Serial, Nama Siswa, Nama Sekolah, Grade, Kelas.`);
   }
-  const rawStudents = values.slice(1).map(row => {
-    const raw = { name: row[indexes.name], email: row[indexes.email], className: row[indexes.className], paymentDate: row[indexes.paymentDate], days: row[indexes.days], schoolName: row[indexes.schoolName] };
-    if (!raw.name || !raw.className) return null;
-    return { name: String(raw.name).trim(), email: String(raw.email || '').trim(), className: normalizeClassName(raw.className), paymentDate: String(raw.paymentDate || '').trim(), days: raw.days, schoolName: String(raw.schoolName || '').trim() };
-  }).filter(Boolean);
+  const rawStudents = values.slice(1).map((row, offset) => ({ rowNumber: offset + 2, studentCode: String(row[indexes.studentCode] || '').trim(), name: String(row[indexes.name] || '').trim(), schoolName: String(row[indexes.schoolName] || '').trim(), grade: String(row[indexes.grade] || '').trim(), className: normalizeClassName(row[indexes.className]) })).filter(student => Object.values(student).some(value => String(value || '').trim() !== ''));
   const students = normalizeStudents(rawStudents, totalRows);
   lastSheetMeta.studentsLoaded = students.length;
   console.log('[STUDENT DATA] Total rows from Google Sheets:', totalRows);
-  console.log('[STUDENT DATA] Program counts:', JSON.stringify(lastSheetMeta.programCounts));
   console.log('[STUDENT DATA] Classes included:', JSON.stringify(lastSheetMeta.classCounts));
+  console.log('[STUDENT DATA] Validation warnings:', JSON.stringify(lastSheetMeta.warnings));
   console.log('[STUDENT DATA] Excluded:', lastSheetMeta.excludedRows);
   console.log('[STUDENT DATA] Rows found:', totalRows);
   console.log('[STUDENT DATA] Students loaded:', students.length);
@@ -232,8 +209,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') return json(res, 204, {});
     if (req.url === '/api/health') return json(res, 200, { ok: true, spreadsheetId: SPREADSHEET_ID, sheetNameConfigured: Boolean(SHEET_NAME), credentialsConfigured: Boolean(CREDENTIALS) });
     if (req.method === 'GET' && req.url === '/api/students/test') {
-      const diagnostic = { success: false, connected: false, spreadsheetId: SPREADSHEET_ID, sheetName: SHEET_NAME, range: `${SHEET_NAME}!A:F`, rowCount: 0, totalRows: 0, rowsRead: 0, rangeRowsRead: 0, classCounts: {}, classNames: [], programCounts: {}, excludedRows: 0, studentsLoaded: 0, skippedRows: [], headers: [], sampleStudents: [] };
-      try { const students = await getStudents(true); diagnostic.success = true; diagnostic.connected = true; diagnostic.headers = lastSheetMeta.headers; diagnostic.rowCount = lastSheetMeta.rowCount; diagnostic.totalRows = lastSheetMeta.totalRows; diagnostic.rowsRead = lastSheetMeta.rowsRead ?? lastSheetMeta.totalRows; diagnostic.rangeRowsRead = lastSheetMeta.rangeRowsRead ?? diagnostic.rowsRead; diagnostic.classCounts = lastSheetMeta.classCounts; diagnostic.classNames = lastSheetMeta.classNames; diagnostic.programCounts = lastSheetMeta.programCounts; diagnostic.excludedRows = lastSheetMeta.excludedRows; diagnostic.skippedRows = lastSheetMeta.skippedRows || []; diagnostic.studentsLoaded = lastSheetMeta.studentsLoaded ?? students.length; diagnostic.sampleStudents = students.slice(0, 3).map(({ email, paymentDate, ...safe }) => safe); return json(res, 200, diagnostic); }
+      const diagnostic = { success: false, connected: false, spreadsheetId: SPREADSHEET_ID, sheetName: SHEET_NAME, range: `${SHEET_NAME}!A:E`, rowCount: 0, totalRows: 0, rowsRead: 0, rangeRowsRead: 0, classCounts: {}, classNames: [], excludedRows: 0, studentsLoaded: 0, skippedRows: [], warnings: {}, headers: [], sampleStudents: [] };
+      try { const students = await getStudents(true); diagnostic.success = true; diagnostic.connected = true; diagnostic.headers = lastSheetMeta.headers; diagnostic.rowCount = lastSheetMeta.rowCount; diagnostic.totalRows = lastSheetMeta.totalRows; diagnostic.rowsRead = lastSheetMeta.rowsRead ?? lastSheetMeta.totalRows; diagnostic.rangeRowsRead = lastSheetMeta.rangeRowsRead ?? diagnostic.rowsRead; diagnostic.classCounts = lastSheetMeta.classCounts; diagnostic.classNames = lastSheetMeta.classNames; diagnostic.warnings = lastSheetMeta.warnings || {}; diagnostic.excludedRows = lastSheetMeta.excludedRows; diagnostic.skippedRows = lastSheetMeta.skippedRows || []; diagnostic.studentsLoaded = lastSheetMeta.studentsLoaded ?? students.length; diagnostic.sampleStudents = students.slice(0, 3); return json(res, 200, diagnostic); }
       catch (err) { diagnostic.message = err.message; diagnostic.error = err.message; diagnostic.errorCode = 'STUDENT_DATA_ERROR'; diagnostic.details = err.details || 'Tidak ada detail tambahan.'; console.error('[STUDENT DATA ERROR]', err.message, err.details || ''); return json(res, 200, diagnostic); }
     }
     if (req.method === 'GET' && req.url.startsWith('/api/students')) {
@@ -250,7 +227,7 @@ const server = http.createServer(async (req, res) => {
       const week = weekFromNumber(body.weekNumber) || weekRange(scannedAt);
       if (!week) return json(res, 400, { error: `Week tugas tidak valid. Week dimulai ${WEEK_ANCHOR}.` });
       const taskCount = Math.max(1, Math.min(2, Number(body.taskCount) || 1));
-      const rows = loadSubmissions().map(enrichSubmission); const current = rows.filter(x => x.studentCode === student.studentCode && x.weekNumber === week.weekNumber && x.recordStatus !== 'cancelled'); const duplicate = rows.some(x => x.studentCode === student.studentCode && x.recordStatus !== 'cancelled' && Math.abs(new Date(x.scannedAt) - scannedAt) < 10_000); const scheduleStatus = student.studyDays.includes(dayName(scannedAt)) ? 'on_schedule' : 'outside_schedule'; const inputParts = zonedParts(scannedAt); const inputDate = `${inputParts.year}-${inputParts.month}-${inputParts.day}`; const inputStatus = inputDate > week.end ? 'late' : 'on_time';
+      const rows = loadSubmissions().map(enrichSubmission); const current = rows.filter(x => x.studentCode === student.studentCode && x.weekNumber === week.weekNumber && x.recordStatus !== 'cancelled'); const duplicate = rows.some(x => x.studentCode === student.studentCode && x.recordStatus !== 'cancelled' && Math.abs(new Date(x.scannedAt) - scannedAt) < 10_000); const scheduleStatus = Array.isArray(student.studyDays) && student.studyDays.length && student.studyDays.includes(dayName(scannedAt)) ? 'on_schedule' : 'outside_schedule'; const inputParts = zonedParts(scannedAt); const inputDate = `${inputParts.year}-${inputParts.month}-${inputParts.day}`; const inputStatus = inputDate > week.end ? 'late' : 'on_time';
       if (body.confirmDuplicate === false && duplicate) return json(res, 409, { duplicateWarning: true, student, existing: current[current.length - 1] });
       const scanGroupId = crypto.randomUUID(); const submissions = Array.from({ length: taskCount }, (_, offset) => { const id = crypto.randomUUID(); const submissionNumber = current.length + offset + 1; return { id, recordId: id, scanGroupId, studentCode: student.studentCode, scannedAt: scannedAt.toISOString(), date: inputDate, time: `${inputParts.hour}:${inputParts.minute}`, dayOfWeek: dayName(scannedAt), weekNumber: week.weekNumber, weekStart: week.start, weekEnd: week.end, weekStartDate: week.start, weekEndDate: week.end, submissionNumber, taskNumber: offset + 1, taskCount, scheduleStatus, inputStatus, inputStatusLabel: inputStatus === 'late' ? 'Input Terlambat' : 'Tepat Waktu', recordStatus: 'active', status: submissionNumber > 2 ? 'additional' : scheduleStatus }; });
       rows.push(...submissions); saveSubmissions(rows); return json(res, 201, { submission: submissions[0], submissions, student, duplicateWarning: duplicate });
