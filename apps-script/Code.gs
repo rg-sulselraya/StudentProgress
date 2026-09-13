@@ -41,9 +41,10 @@ function students_() {
   // rowCount/rowsRead count non-empty student rows. rangeRowsRead is retained
   // only as a diagnostic because Google Sheets may include formatted empty rows
   // in getLastRow()/the requested range.
+  const scopedStudents = students.filter(s => allowedClass_(s.className));
   const classCounts = {};
-  students.forEach(s => { const className = String(s.className || '').trim(); if (className) classCounts[className] = (classCounts[className] || 0) + 1; });
-  return {headers:headers, rowCount:rowsWithContent.length, rowsRead:rowsWithContent.length, rangeRowsRead:Math.max(0, values.length - 1), skippedRows:skippedRows, classCounts:classCounts, classNames:Object.keys(classCounts).sort(), students:students};
+  scopedStudents.forEach(s => { const className = String(s.className || '').trim(); if (className) classCounts[className] = (classCounts[className] || 0) + 1; });
+  return {headers:headers, rowCount:rowsWithContent.length, rowsRead:rowsWithContent.length, rangeRowsRead:Math.max(0, values.length - 1), skippedRows:skippedRows, classCounts:classCounts, classNames:Object.keys(classCounts).sort(), excludedRows:Math.max(0, rowsWithContent.length - scopedStudents.length), students:scopedStudents};
 }
 function json_(body) { return ContentService.createTextOutput(JSON.stringify(body)).setMimeType(ContentService.MimeType.JSON); }
 function allowedClass_(value) { const v = String(value || '').trim().replace(/\s+/g, ' ').toUpperCase(); return /^12 KURMER(?:\s|$)/.test(v) || /^SIAP SNBT(?:\s|$)/.test(v) || /^SNBT KEDINASAN(?:\s|$)/.test(v); }
@@ -53,16 +54,6 @@ function dayName_(date) { return {Sunday:'Minggu',Monday:'Senin',Tuesday:'Selasa
 function scanSheet_() { const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID); let sheet = spreadsheet.getSheetByName(SCAN_SHEET_NAME); if (!sheet) sheet = spreadsheet.insertSheet(SCAN_SHEET_NAME); if (sheet.getLastRow() === 0) sheet.appendRow(['Record ID','Scan Group ID','Student Code','Tanggal Scan','Jam Scan','Hari','Week Number','Week Start','Week End','Task Number','Task Count','Status']); return sheet; }
 function existingScans_(sheet) { const values = sheet.getDataRange().getDisplayValues(); if (values.length < 2) return []; const headers = values[0].map(String); const ix = {}; headers.forEach((h,i) => ix[h] = i); return values.slice(1).map(r => { const date = r[ix['Tanggal Scan']] || ''; const time = r[ix['Jam Scan']] || '00:00'; return {id:r[ix.ID],scanGroupId:r[ix['Scan Group ID']],studentCode:r[ix['Student Code']],scannedAt:date ? `${date}T${time}:00+08:00` : null,date,time,dayOfWeek:r[ix.Hari],weekNumber:Number(r[ix['Week Number']]),weekStart:r[ix['Week Start']],weekEnd:r[ix['Week End']],taskNumber:Number(r[ix['Task Number']]),taskCount:Number(r[ix['Task Count']]),status:r[ix.Status]||'Tercatat',recordStatus:'active'}; }); }
  function saveScanLegacy_(e) { try { const body = JSON.parse((e && e.postData && e.postData.contents) || '{}'); const code = String(body.studentCode || '').trim(); if (!code) return json_({error:'studentCode wajib diisi.'}); const data = students_(); const student = data.students.find(s => s.studentCode === code && allowedClass_(s.className)); if (!student) return json_({error:'Student code tidak ditemukan atau siswa tidak termasuk dalam cakupan program.'}); const scannedAt = body.scannedAt ? new Date(body.scannedAt) : new Date(); if (isNaN(scannedAt.getTime())) return json_({error:'Tanggal scan tidak valid.'}); const week = weekFromDate_(scannedAt); if (!week) return json_({error:'Tanggal scan berada sebelum Week 1 (3 Agustus 2026).'}); const selectedWeek = Number(body.weekNumber); if (Number.isInteger(selectedWeek) && selectedWeek !== week.weekNumber) return json_({error:'Week scan tidak sesuai dengan tanggal scan.',expectedWeek:week.weekNumber}); const taskCount = Math.max(1, Math.min(2, Number(body.taskCount) || 1)); const sheet = scanSheet_(); const previous = existingScans_(sheet).filter(row => row.studentCode === code && row.weekNumber === week.weekNumber && row.recordStatus !== 'cancelled'); const groupId = Utilities.getUuid(); const rows = []; for (let i = 1; i <= taskCount; i++) { const id = Utilities.getUuid(); const status = previous.length + i > 2 ? 'Tambahan' : 'Tercatat'; rows.push({id,scanGroupId:groupId,studentCode:code,scannedAt:Utilities.formatDate(scannedAt,APP_TIMEZONE,"yyyy-MM-dd'T'HH:mm:ssXXX"),date:Utilities.formatDate(scannedAt,APP_TIMEZONE,'yyyy-MM-dd'),time:Utilities.formatDate(scannedAt,APP_TIMEZONE,'HH:mm'),dayOfWeek:dayName_(scannedAt),weekNumber:week.weekNumber,weekStart:week.start,weekEnd:week.end,taskNumber:i,taskCount,status,recordStatus:'active'}); sheet.appendRow([id,groupId,code,rows[i-1].date,rows[i-1].time,rows[i-1].dayOfWeek,week.weekNumber,week.start,week.end,i,taskCount,status]); } return json_({ok:true,student,submission:rows[0],submissions:rows}); } catch (err) { return json_({ok:false,error:err.message}); } }
-function doGet(e) {
-  try {
-    const action = (e && e.parameter && e.parameter.action) || 'students';
-    if (action === 'submissions') { const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SCAN_SHEET_NAME); if (sheet) ensureScanMetadataColumns_(sheet); const rows = sheet ? existingScans_(sheet) : []; return json_({success:true,data:rows,submissions:rows}); }
-    const data = students_();
-    if (action === 'test') return json_({connected:true,spreadsheetId:SPREADSHEET_ID,sheetName:SHEET_NAME,range:SHEET_NAME+'!A:F',rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,headers:data.headers,classCounts:data.classCounts,classNames:data.classNames,skippedRows:data.skippedRows,sampleStudents:data.students.slice(0,3).map(s => ({studentCode:s.studentCode,name:s.name,className:s.className,studyDays:s.studyDays,schoolName:s.schoolName})),studentsLoaded:data.students.length});
-    return json_({students:data.students,source:'google_apps_script',sheetName:SHEET_NAME,headers:data.headers,rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,classCounts:data.classCounts,classNames:data.classNames});
-  } catch (err) { return json_({connected:false,error:err.message,spreadsheetId:SPREADSHEET_ID,sheetName:SHEET_NAME,range:SHEET_NAME+'!A:F'}); }
-}
-
 // Stable record identifiers and mutation actions for the history screen.
 function scanColumns_(sheet) {
   const lastColumn = Math.max(1, sheet.getLastColumn());
@@ -143,9 +134,18 @@ function doPost(e) {
 function doGet(e) {
   try {
     const action = (e && e.parameter && e.parameter.action) || 'students';
-    if (action === 'submissions') { const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SCAN_SHEET_NAME); return json_({submissions:sheet ? existingScans_(sheet) : []}); }
+    if (action === 'submissions') {
+      const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SCAN_SHEET_NAME);
+      if (sheet) ensureScanMetadataColumns_(sheet);
+      const rows = sheet ? existingScans_(sheet) : [];
+      return json_({success:true,data:rows,submissions:rows});
+    }
     const data = students_();
-    if (action === 'test') return json_({connected:true,spreadsheetId:SPREADSHEET_ID,sheetName:SHEET_NAME,range:SHEET_NAME+'!A:F',rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,headers:data.headers,classCounts:data.classCounts,classNames:data.classNames,skippedRows:data.skippedRows,sampleStudents:data.students.slice(0,3).map(s => ({studentCode:s.studentCode,name:s.name,className:s.className,studyDays:s.studyDays,schoolName:s.schoolName})),studentsLoaded:data.students.length});
-    return json_({students:data.students,source:'google_apps_script',sheetName:SHEET_NAME,headers:data.headers,rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,classCounts:data.classCounts,classNames:data.classNames});
-  } catch (err) { return json_({connected:false,error:err.message,spreadsheetId:SPREADSHEET_ID,sheetName:SHEET_NAME,range:SHEET_NAME+'!A:F'}); }
+    if (action === 'test') return json_({success:true,connected:true,spreadsheetId:SPREADSHEET_ID,sheetName:SHEET_NAME,range:SHEET_NAME+'!A:F',rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,headers:data.headers,classCounts:data.classCounts,classNames:data.classNames,skippedRows:data.skippedRows,excludedRows:data.excludedRows,sampleStudents:data.students.slice(0,3).map(s => ({studentCode:s.studentCode,name:s.name,className:s.className,studyDays:s.studyDays,schoolName:s.schoolName})),studentsLoaded:data.students.length});
+    return json_({success:true,data:data.students,students:data.students,source:'google_apps_script',sheetName:SHEET_NAME,headers:data.headers,meta:{totalRows:data.rowCount,filteredRows:data.students.length,excludedRows:data.excludedRows,classCounts:data.classCounts,classNames:data.classNames},rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,classCounts:data.classCounts,classNames:data.classNames});
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    const errorCode = /header/i.test(message) ? 'INVALID_HEADER' : /sheet|spreadsheet|siswa/i.test(message) ? 'SHEET_READ_ERROR' : 'STUDENT_DATA_ERROR';
+    return json_({success:false,connected:false,message,error:message,errorCode,spreadsheetId:SPREADSHEET_ID,sheetName:SHEET_NAME,range:SHEET_NAME+'!A:F'});
+  }
 }

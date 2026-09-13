@@ -99,17 +99,18 @@ async function readStudents() {
         // Some Apps Script deployments prepend a short HTML wrapper before
         // the JSON body. Recover the JSON object instead of treating it as a
         // successful HTML page with no student data.
-        const starts = [rawBody.indexOf('{"connected"'), rawBody.indexOf('{"students"')].filter(i => i >= 0);
+        const starts = [rawBody.indexOf('{"success"'), rawBody.indexOf('{"connected"'), rawBody.indexOf('{"students"')].filter(i => i >= 0);
         const start = starts.length ? Math.min(...starts) : -1;
         const end = rawBody.lastIndexOf('}');
         if (start < 0 || end <= start) throw new Error('Respons Apps Script bukan JSON yang valid.');
         payload = JSON.parse(rawBody.slice(start, end + 1));
       }
-      if (!response.ok || payload.connected === false || !Array.isArray(payload.students)) throw apiError(payload.error || 'Apps Script tidak mengembalikan data siswa.', payload.details || 'Periksa deployment Web App Apps Script.');
+      const upstreamStudents = payload.students ?? payload.data;
+      if (!response.ok || payload.success !== true || payload.connected === false || !Array.isArray(upstreamStudents)) throw apiError(payload.message || payload.error || 'Apps Script tidak mengembalikan data siswa.', payload.details || 'Periksa deployment Web App Apps Script versi terbaru.');
       // Apps Script returns raw rows; apply the same server-side programme
       // filter used by the direct Google Sheets path.
-      const totalRows = payload.rowCount ?? payload.students.length;
-      const students = normalizeStudents(payload.students, totalRows);
+      const totalRows = payload.rowCount ?? upstreamStudents.length;
+      const students = normalizeStudents(upstreamStudents, totalRows);
       lastSheetMeta = { headers: payload.headers || [], rowCount: totalRows, totalRows, rowsRead: totalRows, rangeRowsRead: payload.rangeRowsRead ?? payload.rowsRead ?? totalRows, studentsLoaded: students.length, skippedRows: payload.skippedRows || [], classCounts: lastSheetMeta.classCounts, classNames: lastSheetMeta.classNames, programCounts: lastSheetMeta.programCounts, excludedRows: lastSheetMeta.excludedRows };
       console.log('[STUDENT DATA] Headers:', (lastSheetMeta.headers || []).join(' | '));
       console.log('[STUDENT DATA] Rows found:', lastSheetMeta.totalRows);
@@ -231,15 +232,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') return json(res, 204, {});
     if (req.url === '/api/health') return json(res, 200, { ok: true, spreadsheetId: SPREADSHEET_ID, sheetNameConfigured: Boolean(SHEET_NAME), credentialsConfigured: Boolean(CREDENTIALS) });
     if (req.method === 'GET' && req.url === '/api/students/test') {
-      const diagnostic = { connected: false, spreadsheetId: SPREADSHEET_ID, sheetName: SHEET_NAME, range: `${SHEET_NAME}!A:F`, rowCount: 0, totalRows: 0, rowsRead: 0, rangeRowsRead: 0, classCounts: {}, classNames: [], programCounts: {}, excludedRows: 0, studentsLoaded: 0, skippedRows: [], headers: [], sampleStudents: [] };
-      try { const students = await getStudents(true); diagnostic.connected = true; diagnostic.headers = lastSheetMeta.headers; diagnostic.rowCount = lastSheetMeta.rowCount; diagnostic.totalRows = lastSheetMeta.totalRows; diagnostic.rowsRead = lastSheetMeta.rowsRead ?? lastSheetMeta.totalRows; diagnostic.rangeRowsRead = lastSheetMeta.rangeRowsRead ?? diagnostic.rowsRead; diagnostic.classCounts = lastSheetMeta.classCounts; diagnostic.classNames = lastSheetMeta.classNames; diagnostic.programCounts = lastSheetMeta.programCounts; diagnostic.excludedRows = lastSheetMeta.excludedRows; diagnostic.skippedRows = lastSheetMeta.skippedRows || []; diagnostic.studentsLoaded = lastSheetMeta.studentsLoaded ?? students.length; diagnostic.sampleStudents = students.slice(0, 3).map(({ email, paymentDate, ...safe }) => safe); return json(res, 200, diagnostic); }
-      catch (err) { diagnostic.error = err.message; diagnostic.details = err.details || 'Tidak ada detail tambahan.'; console.error('[STUDENT DATA ERROR]', err.message, err.details || ''); return json(res, 200, diagnostic); }
+      const diagnostic = { success: false, connected: false, spreadsheetId: SPREADSHEET_ID, sheetName: SHEET_NAME, range: `${SHEET_NAME}!A:F`, rowCount: 0, totalRows: 0, rowsRead: 0, rangeRowsRead: 0, classCounts: {}, classNames: [], programCounts: {}, excludedRows: 0, studentsLoaded: 0, skippedRows: [], headers: [], sampleStudents: [] };
+      try { const students = await getStudents(true); diagnostic.success = true; diagnostic.connected = true; diagnostic.headers = lastSheetMeta.headers; diagnostic.rowCount = lastSheetMeta.rowCount; diagnostic.totalRows = lastSheetMeta.totalRows; diagnostic.rowsRead = lastSheetMeta.rowsRead ?? lastSheetMeta.totalRows; diagnostic.rangeRowsRead = lastSheetMeta.rangeRowsRead ?? diagnostic.rowsRead; diagnostic.classCounts = lastSheetMeta.classCounts; diagnostic.classNames = lastSheetMeta.classNames; diagnostic.programCounts = lastSheetMeta.programCounts; diagnostic.excludedRows = lastSheetMeta.excludedRows; diagnostic.skippedRows = lastSheetMeta.skippedRows || []; diagnostic.studentsLoaded = lastSheetMeta.studentsLoaded ?? students.length; diagnostic.sampleStudents = students.slice(0, 3).map(({ email, paymentDate, ...safe }) => safe); return json(res, 200, diagnostic); }
+      catch (err) { diagnostic.message = err.message; diagnostic.error = err.message; diagnostic.errorCode = 'STUDENT_DATA_ERROR'; diagnostic.details = err.details || 'Tidak ada detail tambahan.'; console.error('[STUDENT DATA ERROR]', err.message, err.details || ''); return json(res, 200, diagnostic); }
     }
     if (req.method === 'GET' && req.url.startsWith('/api/students')) {
       const students = await getStudents(req.url.includes('refresh=1'));
       const code = req.url.split('/api/students/')[1]?.split('?')[0];
       if (code) { const student = students.find(s => s.studentCode === decodeURIComponent(code)); return student ? json(res, 200, student) : json(res, 404, { error: 'Siswa tidak ditemukan.' }); }
-      return json(res, 200, { students, source: 'google_sheets', sheetName: SHEET_NAME });
+      return json(res, 200, { success: true, data: students, students, source: 'google_sheets', sheetName: SHEET_NAME, meta: { ...lastSheetMeta, filteredRows: students.length } });
     }
     if (req.method === 'GET' && req.url.startsWith('/api/submissions')) { const submissions = loadSubmissions().map(enrichSubmission); return json(res, 200, { success: true, data: submissions, submissions }); }
     if (req.method === 'POST' && req.url === '/api/submissions') {
@@ -290,6 +291,6 @@ const server = http.createServer(async (req, res) => {
       saveSubmissions(rows); return json(res, 200, { success: true, message: 'Scan berhasil diedit', submission: rows[index], submissions: rows.filter(row => row.scanGroupId === record.scanGroupId || row.id === id) });
     }
     return serveStatic(req, res);
-  } catch (err) { return json(res, err.message === 'Payload terlalu besar' ? 413 : 500, { error: err.message || 'Server error', details: err.details || undefined }); }
+  } catch (err) { return json(res, err.message === 'Payload terlalu besar' ? 413 : 500, { success: false, message: err.message || 'Server error', error: err.message || 'Server error', errorCode: 'STUDENT_DATA_ERROR', details: err.details || undefined }); }
 });
 server.listen(PORT, HOST, () => console.log(`Student Task Tracker backend: http://${HOST}:${PORT}`));
