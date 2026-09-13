@@ -209,7 +209,7 @@ function enrichSubmission(row) {
   const inputDate = row.date || (row.scannedAt ? zonedParts(row.scannedAt) : null);
   const inputDay = typeof inputDate === 'string' ? inputDate.slice(0, 10) : (inputDate ? `${inputDate.year}-${inputDate.month}-${inputDate.day}` : null);
   const inputStatus = row.inputStatus || (inputDay && weekEndDate ? (inputDay > String(weekEndDate).slice(0, 10) ? 'late' : 'on_time') : null);
-  return { ...row, recordStatus: row.recordStatus === 'cancelled' ? 'cancelled' : 'active', weekNumber: Number.isInteger(week) && week > 0 ? week : null, weekStartDate, weekEndDate, inputStatus, inputStatusLabel: inputStatus === 'late' ? 'Input Terlambat' : inputStatus === 'on_time' ? 'Tepat Waktu' : null };
+  return { ...row, recordId: row.recordId || row.id, recordStatus: row.recordStatus === 'cancelled' ? 'cancelled' : 'active', weekNumber: Number.isInteger(week) && week > 0 ? week : null, weekStartDate, weekEndDate, inputStatus, inputStatusLabel: inputStatus === 'late' ? 'Input Terlambat' : inputStatus === 'on_time' ? 'Tepat Waktu' : null };
 }
 
 const cache = { students: null, at: 0, inflight: null };
@@ -251,7 +251,7 @@ const server = http.createServer(async (req, res) => {
       const taskCount = Math.max(1, Math.min(2, Number(body.taskCount) || 1));
       const rows = loadSubmissions().map(enrichSubmission); const current = rows.filter(x => x.studentCode === student.studentCode && x.weekNumber === week.weekNumber && x.recordStatus !== 'cancelled'); const duplicate = rows.some(x => x.studentCode === student.studentCode && x.recordStatus !== 'cancelled' && Math.abs(new Date(x.scannedAt) - scannedAt) < 10_000); const scheduleStatus = student.studyDays.includes(dayName(scannedAt)) ? 'on_schedule' : 'outside_schedule'; const inputParts = zonedParts(scannedAt); const inputDate = `${inputParts.year}-${inputParts.month}-${inputParts.day}`; const inputStatus = inputDate > week.end ? 'late' : 'on_time';
       if (body.confirmDuplicate === false && duplicate) return json(res, 409, { duplicateWarning: true, student, existing: current[current.length - 1] });
-      const scanGroupId = crypto.randomUUID(); const submissions = Array.from({ length: taskCount }, (_, offset) => { const submissionNumber = current.length + offset + 1; return { id: crypto.randomUUID(), scanGroupId, studentCode: student.studentCode, scannedAt: scannedAt.toISOString(), date: inputDate, time: `${inputParts.hour}:${inputParts.minute}`, dayOfWeek: dayName(scannedAt), weekNumber: week.weekNumber, weekStart: week.start, weekEnd: week.end, weekStartDate: week.start, weekEndDate: week.end, submissionNumber, taskNumber: offset + 1, taskCount, scheduleStatus, inputStatus, inputStatusLabel: inputStatus === 'late' ? 'Input Terlambat' : 'Tepat Waktu', recordStatus: 'active', status: submissionNumber > 2 ? 'additional' : scheduleStatus }; });
+      const scanGroupId = crypto.randomUUID(); const submissions = Array.from({ length: taskCount }, (_, offset) => { const id = crypto.randomUUID(); const submissionNumber = current.length + offset + 1; return { id, recordId: id, scanGroupId, studentCode: student.studentCode, scannedAt: scannedAt.toISOString(), date: inputDate, time: `${inputParts.hour}:${inputParts.minute}`, dayOfWeek: dayName(scannedAt), weekNumber: week.weekNumber, weekStart: week.start, weekEnd: week.end, weekStartDate: week.start, weekEndDate: week.end, submissionNumber, taskNumber: offset + 1, taskCount, scheduleStatus, inputStatus, inputStatusLabel: inputStatus === 'late' ? 'Input Terlambat' : 'Tepat Waktu', recordStatus: 'active', status: submissionNumber > 2 ? 'additional' : scheduleStatus }; });
       rows.push(...submissions); saveSubmissions(rows); return json(res, 201, { submission: submissions[0], submissions, student, duplicateWarning: duplicate });
     }
     if (req.method === 'PATCH' && req.url.startsWith('/api/submissions/')) {
@@ -263,7 +263,7 @@ const server = http.createServer(async (req, res) => {
       if (body.action === 'cancel') {
         const reason = String(body.cancelReason || '').trim(); if (!reason) return json(res, 400, { error: 'Alasan pembatalan wajib dipilih.' });
         rows[index] = { ...record, recordStatus: 'cancelled', cancelledAt: now.toISOString(), cancelledBy: String(body.cancelledBy || 'Wali Kelas'), cancelReason: reason, updatedAt: now.toISOString(), updatedBy: String(body.updatedBy || body.cancelledBy || 'Wali Kelas') };
-        saveSubmissions(rows); return json(res, 200, { submission: rows[index] });
+        saveSubmissions(rows); return json(res, 200, { success: true, message: 'Scan berhasil dibatalkan', submission: rows[index] });
       }
       const week = body.weekNumber == null ? weekFromNumber(record.weekNumber) : weekFromNumber(body.weekNumber);
       if (!week) return json(res, 400, { error: 'Week tugas tidak valid.' });
@@ -287,7 +287,7 @@ const server = http.createServer(async (req, res) => {
           rows.push({ ...rows[index], id: crypto.randomUUID(), scanGroupId: groupId, taskNumber, submissionNumber: Number(record.submissionNumber || 1) + (taskNumber === 2 ? 1 : -1), taskCount: 2, status: Number(record.submissionNumber || 1) + (taskNumber === 2 ? 1 : -1) > 2 ? 'additional' : record.status });
         }
       }
-      saveSubmissions(rows); return json(res, 200, { submission: rows[index], submissions: rows.filter(row => row.scanGroupId === record.scanGroupId || row.id === id) });
+      saveSubmissions(rows); return json(res, 200, { success: true, message: 'Scan berhasil diedit', submission: rows[index], submissions: rows.filter(row => row.scanGroupId === record.scanGroupId || row.id === id) });
     }
     return serveStatic(req, res);
   } catch (err) { return json(res, err.message === 'Payload terlalu besar' ? 413 : 500, { error: err.message || 'Server error', details: err.details || undefined }); }
