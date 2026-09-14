@@ -50,7 +50,45 @@ function dayName_(date) { return {Sunday:'Minggu',Monday:'Senin',Tuesday:'Selasa
 function scanSheet_() { const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID); let sheet = spreadsheet.getSheetByName(SCAN_SHEET_NAME); if (!sheet) sheet = spreadsheet.insertSheet(SCAN_SHEET_NAME); if (sheet.getLastRow() === 0) sheet.appendRow(['Record ID','Scan Group ID','Student Code','Tanggal Scan','Jam Scan','Hari','Week Number','Week Start','Week End','Task Number','Task Count','Status']); return sheet; }
 function normalizeTime_(value) { const match = String(value || '00:00').trim().match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/); if (!match) return '00:00:00'; return `${String(Math.min(23, Number(match[1]) || 0)).padStart(2,'0')}:${String(Math.min(59, Number(match[2]) || 0)).padStart(2,'0')}:${String(Math.min(59, Number(match[3]) || 0)).padStart(2,'0')}`; }
 function existingScans_(sheet) { const values = sheet.getDataRange().getDisplayValues(); if (values.length < 2) return []; const headers = values[0].map(String); const ix = {}; headers.forEach((h,i) => ix[h] = i); return values.slice(1).map(r => { const date = r[ix['Tanggal Scan']] || ''; const time = r[ix['Jam Scan']] || '00:00'; const normalizedTime = normalizeTime_(time); return {id:r[ix.ID],scanGroupId:r[ix['Scan Group ID']],studentCode:r[ix['Student Code']],scannedAt:date ? `${date}T${normalizedTime}+08:00` : null,date,time:normalizedTime.slice(0,5),dayOfWeek:r[ix.Hari],weekNumber:Number(r[ix['Week Number']]),weekStart:r[ix['Week Start']],weekEnd:r[ix['Week End']],taskNumber:Number(r[ix['Task Number']]),taskCount:Number(r[ix['Task Count']]),status:r[ix.Status]||'Tercatat',recordStatus:'active'}; }); }
- function saveScanLegacy_(e) { try { const body = JSON.parse((e && e.postData && e.postData.contents) || '{}'); const code = String(body.studentCode || '').trim(); if (!code) return json_({success:false,ok:false,error:'studentCode wajib diisi.'}); const data = students_(); const student = data.students.find(s => s.studentCode === code); if (!student) return json_({success:false,ok:false,error:'User Serial tidak ditemukan di database siswa.'}); const scannedAt = body.scannedAt ? new Date(body.scannedAt) : new Date(); if (isNaN(scannedAt.getTime())) return json_({success:false,ok:false,error:'Tanggal scan tidak valid.'}); const week = weekFromDate_(scannedAt); if (!week) return json_({success:false,ok:false,error:'Tanggal scan berada sebelum Week 1 (3 Agustus 2026).'}); const selectedWeek = Number(body.weekNumber); if (Number.isInteger(selectedWeek) && selectedWeek !== week.weekNumber) return json_({success:false,ok:false,error:'Week scan tidak sesuai dengan tanggal scan.',expectedWeek:week.weekNumber}); const taskCount = Math.max(1, Math.min(2, Number(body.taskCount) || 1)); const sheet = scanSheet_(); const previous = existingScans_(sheet).filter(row => row.studentCode === code && row.weekNumber === week.weekNumber && row.recordStatus !== 'cancelled'); const groupId = Utilities.getUuid(); const rows = []; for (let i = 1; i <= taskCount; i++) { const id = Utilities.getUuid(); const status = previous.length + i > 2 ? 'Tambahan' : 'Tercatat'; rows.push({id,scanGroupId:groupId,studentCode:code,scannedAt:Utilities.formatDate(scannedAt,APP_TIMEZONE,"yyyy-MM-dd'T'HH:mm:ssXXX"),date:Utilities.formatDate(scannedAt,APP_TIMEZONE,'yyyy-MM-dd'),time:Utilities.formatDate(scannedAt,APP_TIMEZONE,'HH:mm'),dayOfWeek:dayName_(scannedAt),weekNumber:week.weekNumber,weekStart:week.start,weekEnd:week.end,taskNumber:i,taskCount,status,recordStatus:'active'}); sheet.appendRow([id,groupId,code,rows[i-1].date,rows[i-1].time,rows[i-1].dayOfWeek,week.weekNumber,week.start,week.end,i,taskCount,status]); } return json_({success:true,ok:true,student,submission:rows[0],submissions:rows}); } catch (err) { return json_({success:false,ok:false,error:err.message}); } }
+function saveScanLegacy_(e) {
+  try {
+    const body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    const code = String(body.studentCode || '').trim();
+    if (!code) return json_({success:false,ok:false,error:'studentCode wajib diisi.'});
+    const data = students_();
+    const student = data.students.find(s => s.studentCode === code);
+    if (!student) return json_({success:false,ok:false,error:'User Serial tidak ditemukan di database siswa.'});
+
+    // scannedAt is the actual input timestamp. It is used only to calculate
+    // the late/on-time status; it must not override the Week selected by the
+    // wali kelas.
+    const scannedAt = body.scannedAt ? new Date(body.scannedAt) : new Date();
+    if (isNaN(scannedAt.getTime())) return json_({success:false,ok:false,error:'Tanggal scan tidak valid.'});
+    const actualWeek = weekFromDate_(scannedAt);
+    if (!actualWeek) return json_({success:false,ok:false,error:'Tanggal scan berada sebelum Week 1 (3 Agustus 2026).'});
+
+    const selectedWeekNumber = Number(body.weekNumber);
+    const week = Number.isInteger(selectedWeekNumber) ? weekFromNumber_(selectedWeekNumber) : actualWeek;
+    if (!week) return json_({success:false,ok:false,error:'Periode Week tidak valid.'});
+    const inputDate = Utilities.formatDate(scannedAt, APP_TIMEZONE, 'yyyy-MM-dd');
+    const inputStatus = inputDate > week.end ? 'late' : 'on_time';
+    const taskCount = Math.max(1, Math.min(2, Number(body.taskCount) || 1));
+    const sheet = scanSheet_();
+    const previous = existingScans_(sheet).filter(row => row.studentCode === code && row.weekNumber === week.weekNumber && row.recordStatus !== 'cancelled');
+    const groupId = Utilities.getUuid();
+    const rows = [];
+    for (let i = 1; i <= taskCount; i++) {
+      const id = Utilities.getUuid();
+      const status = previous.length + i > 2 ? 'Tambahan' : 'Tercatat';
+      const row = {id,scanGroupId:groupId,studentCode:code,scannedAt:Utilities.formatDate(scannedAt,APP_TIMEZONE,"yyyy-MM-dd'T'HH:mm:ssXXX"),date:inputDate,time:Utilities.formatDate(scannedAt,APP_TIMEZONE,'HH:mm'),dayOfWeek:dayName_(scannedAt),weekNumber:week.weekNumber,weekStart:week.start,weekEnd:week.end,taskNumber:i,taskCount,status,inputStatus,inputStatusLabel:inputStatus === 'late' ? 'Input Terlambat' : 'Tepat Waktu',recordStatus:'active'};
+      rows.push(row);
+      sheet.appendRow([id,groupId,code,row.date,row.time,row.dayOfWeek,week.weekNumber,week.start,week.end,i,taskCount,status]);
+    }
+    return json_({success:true,ok:true,student,submission:rows[0],submissions:rows});
+  } catch (err) {
+    return json_({success:false,ok:false,error:err.message});
+  }
+}
 // Stable record identifiers and mutation actions for the history screen.
 function scanColumns_(sheet) {
   const lastColumn = Math.max(1, sheet.getLastColumn());
