@@ -287,6 +287,7 @@
     dashboardSummaryRequest=(async()=>{
       try{
         const {payload}=await fetchJsonWithTimeout(dashboardApiUrl(n));
+        if(Number(payload.weekNumber)!==n||!Array.isArray(payload.students)||payload.students.some(row=>!row||typeof row.count!=='number')) throw Error('Endpoint dashboard belum mengembalikan ringkasan Week yang valid. Deploy ulang Code.gs terbaru.');
         dashboardSummaryByCode=Object.fromEntries((payload.students||[]).map(row=>[String(row.studentCode||'').trim(),Number(row.count)||0]));
         dashboardSummaryWeek=n;
         console.info(`[PERF] Dashboard summary completed: ${Math.round(performance.now()-started)} ms (${payload.totalStudents??Object.keys(dashboardSummaryByCode).length} students)`);
