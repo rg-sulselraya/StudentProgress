@@ -224,8 +224,12 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req); const students = await getStudents(); const student = students.find(s => s.studentCode === body.studentCode); if (!student) return json(res, 404, { error: 'Student code tidak ditemukan.' });
       const scannedAt = body.scannedAt ? new Date(body.scannedAt) : new Date();
       if (Number.isNaN(scannedAt.getTime())) return json(res, 400, { error: 'Tanggal scan tidak valid.' });
-      const week = weekFromNumber(body.weekNumber) || weekRange(scannedAt);
-      if (!week) return json(res, 400, { error: `Week tugas tidak valid. Week dimulai ${WEEK_ANCHOR}.` });
+      // A selected Week is authoritative for progress. The actual scan date
+      // is retained for inputDate and late/on-time status, but never replaces
+      // a valid historical Week selected by the wali kelas.
+      const hasSelectedWeek = body.weekNumber !== undefined && body.weekNumber !== null && body.weekNumber !== '';
+      const week = hasSelectedWeek ? weekFromNumber(body.weekNumber) : weekRange(scannedAt);
+      if (!week) return json(res, 400, { error: 'Periode Week tidak valid.' });
       const taskCount = Math.max(1, Math.min(2, Number(body.taskCount) || 1));
       const rows = loadSubmissions().map(enrichSubmission); const current = rows.filter(x => x.studentCode === student.studentCode && x.weekNumber === week.weekNumber && x.recordStatus !== 'cancelled'); const duplicate = rows.some(x => x.studentCode === student.studentCode && x.recordStatus !== 'cancelled' && Math.abs(new Date(x.scannedAt) - scannedAt) < 10_000); const scheduleStatus = Array.isArray(student.studyDays) && student.studyDays.length && student.studyDays.includes(dayName(scannedAt)) ? 'on_schedule' : 'outside_schedule'; const inputParts = zonedParts(scannedAt); const inputDate = `${inputParts.year}-${inputParts.month}-${inputParts.day}`; const inputStatus = inputDate > week.end ? 'late' : 'on_time';
       if (body.confirmDuplicate === false && duplicate) return json(res, 409, { duplicateWarning: true, student, existing: current[current.length - 1] });
