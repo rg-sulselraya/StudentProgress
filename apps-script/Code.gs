@@ -96,6 +96,7 @@ function locateScanRecord_(sheet, recordId, info) {
   return null;
 }
 function setCell_(sheet, rowNumber, column, value) { if (column >= 0) sheet.getRange(rowNumber, column + 1).setValue(value); }
+function writeScanRow_(sheet, rowNumber, columns, updates) { const row = sheet.getRange(rowNumber, 1, 1, sheet.getLastColumn()).getValues()[0]; Object.keys(updates).forEach(key => { if (columns[key] >= 0) row[columns[key]] = updates[key]; }); sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]); }
 function mutateScan_(body) {
   const action = String(body.action || '').trim(); const recordId = String(body.recordId || body.id || '').trim(); console.log('[SCAN MUTATION]', JSON.stringify({action,recordId,timestamp:new Date().toISOString()}));
   if (!recordId) return {success:false,message:'recordId wajib diisi.'};
@@ -109,7 +110,7 @@ function mutateScan_(body) {
   const now = new Date();
   if (action === 'cancelScan' || action === 'cancel') {
     const reason = String(body.cancelReason || '').trim(); if (!reason) return {success:false,message:'Alasan pembatalan wajib diisi.'};
-    setCell_(sheet, found.rowNumber, c.status, 'Dibatalkan'); setCell_(sheet, found.rowNumber, c.cancelledAt, Utilities.formatDate(now, APP_TIMEZONE, "yyyy-MM-dd'T'HH:mm:ssXXX")); setCell_(sheet, found.rowNumber, c.cancelledBy, body.cancelledBy || 'Wali Kelas'); setCell_(sheet, found.rowNumber, c.cancelReason, reason); setCell_(sheet, found.rowNumber, c.updatedAt, Utilities.formatDate(now, APP_TIMEZONE, "yyyy-MM-dd'T'HH:mm:ssXXX")); setCell_(sheet, found.rowNumber, c.updatedBy, body.cancelledBy || 'Wali Kelas'); console.log('[SCAN MUTATION] cancelled', recordId); return {success:true,message:'Scan berhasil dibatalkan',recordId};
+    const timestamp = Utilities.formatDate(now, APP_TIMEZONE, "yyyy-MM-dd'T'HH:mm:ssXXX"); writeScanRow_(sheet, found.rowNumber, c, {status:'Dibatalkan',cancelledAt:timestamp,cancelledBy:body.cancelledBy || 'Wali Kelas',cancelReason:reason,updatedAt:timestamp,updatedBy:body.cancelledBy || 'Wali Kelas'}); console.log('[SCAN MUTATION] cancelled', recordId); return {success:true,message:'Scan berhasil dibatalkan',recordId};
   }
   if (action !== 'editScan' && action !== 'edit') return {success:false,message:'Action scan tidak dikenali.'};
   const week = weekFromNumber_(Number(body.weekNumber)); if (!week) return {success:false,message:'Week tugas tidak valid.'};
@@ -120,8 +121,8 @@ function mutateScan_(body) {
   if (c.recordId >= 0 && !valueAt_(found.row, c.recordId)) setCell_(sheet, found.rowNumber, c.recordId, Utilities.getUuid());
   const values = sheet.getDataRange().getDisplayValues();
   const groupId = current.scanGroupId || `single-${recordId}`;
-  const groupRows = values.slice(1).map((row, offset) => ({row, rowNumber:offset + 2, record:existingScans_(sheet)[offset]})).filter(item => item.record && item.record.recordStatus !== 'cancelled' && (item.record.scanGroupId || `single-${item.record.recordId}`) === groupId);
-  const updateRow = item => { setCell_(sheet,item.rowNumber,c.weekNumber,week.weekNumber); setCell_(sheet,item.rowNumber,c.weekStart,week.start); setCell_(sheet,item.rowNumber,c.weekEnd,week.end); setCell_(sheet,item.rowNumber,c.taskCount,taskCount); setCell_(sheet,item.rowNumber,c.updatedAt,Utilities.formatDate(now,APP_TIMEZONE,"yyyy-MM-dd'T'HH:mm:ssXXX")); setCell_(sheet,item.rowNumber,c.updatedBy,body.updatedBy||'Wali Kelas'); };
+  const groupRows = values.slice(1).map((row, offset) => ({row, rowNumber:offset + 2, record:records[offset]})).filter(item => item.record && item.record.recordStatus !== 'cancelled' && (item.record.scanGroupId || `single-${item.record.recordId}`) === groupId);
+  const timestamp = Utilities.formatDate(now, APP_TIMEZONE,"yyyy-MM-dd'T'HH:mm:ssXXX"); const updateRow = item => writeScanRow_(sheet,item.rowNumber,c,{weekNumber:week.weekNumber,weekStart:week.start,weekEnd:week.end,taskCount,updatedAt:timestamp,updatedBy:body.updatedBy||'Wali Kelas'});
   groupRows.forEach(updateRow);
   if (taskCount === 1) {
     groupRows.filter(item => item.rowNumber !== found.rowNumber).forEach(item => { setCell_(sheet,item.rowNumber,c.status,'Dibatalkan'); setCell_(sheet,item.rowNumber,c.cancelledAt,Utilities.formatDate(now,APP_TIMEZONE,"yyyy-MM-dd'T'HH:mm:ssXXX")); setCell_(sheet,item.rowNumber,c.cancelledBy,body.updatedBy||'Wali Kelas'); setCell_(sheet,item.rowNumber,c.cancelReason,'Jumlah tugas diubah menjadi 1'); });
