@@ -44,6 +44,11 @@ function students_() {
   return {headers:headers,rowCount:rowsWithContent.length,rowsRead:rowsWithContent.length,rangeRowsRead:Math.max(0, values.length - 1),skippedRows:warnings.invalidRows,classCounts:classCounts,classNames:Object.keys(classCounts).sort(),excludedRows:Math.max(0, rowsWithContent.length - students.length),warnings:warnings,students:students};
 }
 function json_(body) { return ContentService.createTextOutput(JSON.stringify(body)).setMimeType(ContentService.MimeType.JSON); }
+function perfJson_(body, action, startedAt) {
+  const count = Array.isArray(body && body.submissions) ? body.submissions.length : Array.isArray(body && body.students) ? body.students.length : Array.isArray(body && body.data) ? body.data.length : 0;
+  console.log(`[PERF] Apps Script ${action} completed: ${Date.now() - startedAt} ms (${count} records)`);
+  return json_(body);
+}
 function weekFromDate_(date) { const key = Utilities.formatDate(new Date(date), APP_TIMEZONE, 'yyyy-MM-dd'); const current = Date.parse(key + 'T00:00:00Z'); const anchor = Date.parse(WEEK_ANCHOR + 'T00:00:00Z'); if (!Number.isFinite(current) || current < anchor) return null; const weekNumber = Math.floor((current - anchor) / 86400000 / 7) + 1; const start = new Date(anchor + (weekNumber - 1) * 7 * 86400000); const end = new Date(start.getTime() + 6 * 86400000); return {weekNumber, start:Utilities.formatDate(start, 'UTC', 'yyyy-MM-dd'), end:Utilities.formatDate(end, 'UTC', 'yyyy-MM-dd')}; }
 function weekFromNumber_(number) { const weekNumber = Number(number); if (!Number.isInteger(weekNumber) || weekNumber < 1) return null; const anchor = Date.parse(WEEK_ANCHOR + 'T00:00:00Z'); const start = new Date(anchor + (weekNumber - 1) * 7 * 86400000); const end = new Date(start.getTime() + 6 * 86400000); return {weekNumber, start:Utilities.formatDate(start, 'UTC', 'yyyy-MM-dd'), end:Utilities.formatDate(end, 'UTC', 'yyyy-MM-dd')}; }
 function dayName_(date) { return {Sunday:'Minggu',Monday:'Senin',Tuesday:'Selasa',Wednesday:'Rabu',Thursday:'Kamis',Friday:'Jumat',Saturday:'Sabtu'}[Utilities.formatDate(new Date(date), APP_TIMEZONE, 'EEEE')]; }
@@ -179,20 +184,22 @@ function doPost(e) {
   } catch (err) { console.log('[SCAN MUTATION ERROR]', err.message); return json_({success:false,ok:false,message:err.message,error:err.message}); }
 }
 function doGet(e) {
+  const startedAt = Date.now();
+  const action = (e && e.parameter && e.parameter.action) || 'students';
+  console.log(`[PERF] Apps Script ${action} started`);
   try {
-    const action = (e && e.parameter && e.parameter.action) || 'students';
     if (action === 'submissions') {
       const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SCAN_SHEET_NAME);
       if (sheet) ensureScanMetadataColumns_(sheet);
       const rows = sheet ? existingScans_(sheet) : [];
-      return json_({success:true,data:rows,submissions:rows});
+      return perfJson_({success:true,data:rows,submissions:rows}, action, startedAt);
     }
     const data = students_();
-    if (action === 'test') return json_({success:true,connected:true,spreadsheetId:SPREADSHEET_ID,sheetName:SHEET_NAME,range:SHEET_NAME+'!A:E',rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,headers:data.headers,classCounts:data.classCounts,classNames:data.classNames,skippedRows:data.skippedRows,excludedRows:data.excludedRows,warnings:data.warnings,sampleStudents:data.students.slice(0,3).map(s => ({studentCode:s.studentCode,studentName:s.studentName,schoolName:s.schoolName,grade:s.grade,className:s.className})),studentsLoaded:data.students.length});
-    return json_({success:true,data:data.students,students:data.students,source:'google_apps_script',sheetName:SHEET_NAME,headers:data.headers,meta:{totalRows:data.rowCount,filteredRows:data.students.length,excludedRows:data.excludedRows,classCounts:data.classCounts,classNames:data.classNames,warnings:data.warnings},rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,classCounts:data.classCounts,classNames:data.classNames,warnings:data.warnings});
+    if (action === 'test') return perfJson_({success:true,connected:true,spreadsheetId:SPREADSHEET_ID,sheetName:SHEET_NAME,range:SHEET_NAME+'!A:E',rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,headers:data.headers,classCounts:data.classCounts,classNames:data.classNames,skippedRows:data.skippedRows,excludedRows:data.excludedRows,warnings:data.warnings,sampleStudents:data.students.slice(0,3).map(s => ({studentCode:s.studentCode,studentName:s.studentName,schoolName:s.schoolName,grade:s.grade,className:s.className})),studentsLoaded:data.students.length}, action, startedAt);
+    return perfJson_({success:true,data:data.students,students:data.students,source:'google_apps_script',sheetName:SHEET_NAME,headers:data.headers,meta:{totalRows:data.rowCount,filteredRows:data.students.length,excludedRows:data.excludedRows,classCounts:data.classCounts,classNames:data.classNames,warnings:data.warnings},rowCount:data.rowCount,totalRows:data.rowCount,rowsRead:data.rowsRead,rangeRowsRead:data.rangeRowsRead,classCounts:data.classCounts,classNames:data.classNames,warnings:data.warnings}, action, startedAt);
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     const errorCode = /header|struktur database terbaru/i.test(message) ? 'INVALID_HEADERS' : /sheet|spreadsheet|siswa/i.test(message) ? 'SHEET_READ_ERROR' : 'STUDENT_DATA_ERROR';
-    return json_({success:false,connected:false,message,error:errorCode === 'INVALID_HEADERS' ? 'INVALID_HEADERS' : message,errorCode,spreadsheetId:SPREADSHEET_ID,sheetName:SHEET_NAME,range:SHEET_NAME+'!A:E'});
+    return perfJson_({success:false,connected:false,message,error:errorCode === 'INVALID_HEADERS' ? 'INVALID_HEADERS' : message,errorCode,spreadsheetId:SPREADSHEET_ID,sheetName:SHEET_NAME,range:SHEET_NAME+'!A:E'}, action, startedAt);
   }
 }
