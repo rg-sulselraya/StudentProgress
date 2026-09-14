@@ -220,6 +220,34 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { success: true, data: students, students, source: 'google_sheets', sheetName: SHEET_NAME, meta: { ...lastSheetMeta, filteredRows: students.length } });
     }
     if (req.method === 'GET' && req.url.startsWith('/api/submissions')) { const submissions = loadSubmissions().map(enrichSubmission); return json(res, 200, { success: true, data: submissions, submissions }); }
+    if (req.method === 'GET' && req.url.startsWith('/api/dashboard')) {
+      const query = new URL(req.url, `http://${HOST}:${PORT}`).searchParams;
+      const weekNumber = Number(query.get('weekNumber'));
+      const week = weekFromNumber(weekNumber);
+      if (!week) return json(res, 400, { success: false, error: 'Periode Week tidak valid.' });
+      // Keep Google Sheets/Apps Script as the source of truth when configured;
+      // the local JSON file is only used when running without an upstream.
+      if (APPS_SCRIPT_URL) {
+        try {
+          const upstreamUrl = new URL(APPS_SCRIPT_URL);
+          upstreamUrl.searchParams.set('action', 'dashboard');
+          upstreamUrl.searchParams.set('weekNumber', String(weekNumber));
+          const upstreamResponse = await fetch(upstreamUrl, { redirect: 'follow', headers: { Accept: 'application/json' } });
+          const upstreamPayload = JSON.parse(await upstreamResponse.text());
+          if (upstreamResponse.ok && upstreamPayload.success === true) return json(res, 200, upstreamPayload);
+          return json(res, 502, { success: false, error: upstreamPayload.error || upstreamPayload.message || 'Apps Script dashboard tidak mengonfirmasi keberhasilan.', details: upstreamPayload.details });
+        } catch (err) {
+          return json(res, 502, { success: false, error: 'Dashboard Google Sheets tidak dapat dimuat.', details: err.message });
+        }
+      }
+      const students = await getStudents();
+      const rows = loadSubmissions().map(enrichSubmission);
+      const counts = new Map();
+      rows.filter(row => Number(row.weekNumber) === week.weekNumber && row.recordStatus !== 'cancelled' && String(row.status || '').toLowerCase() !== 'dibatalkan')
+        .forEach(row => counts.set(row.studentCode, (counts.get(row.studentCode) || 0) + 1));
+      const summary = students.map(student => ({ studentCode: student.studentCode, count: counts.get(student.studentCode) || 0 }));
+      return json(res, 200, { success: true, weekNumber: week.weekNumber, weekStart: week.start, weekEnd: week.end, students: summary, totalStudents: summary.length, achieved: summary.filter(row => row.count >= 2).length, partial: summary.filter(row => row.count > 0 && row.count < 2).length, none: summary.filter(row => row.count === 0).length, activeRecords: summary.reduce((total, row) => total + row.count, 0) });
+    }
     if (req.method === 'POST' && req.url === '/api/submissions') {
       const body = await readBody(req); const students = await getStudents(); const student = students.find(s => s.studentCode === body.studentCode); if (!student) return json(res, 404, { error: 'Student code tidak ditemukan.' });
       const scannedAt = body.scannedAt ? new Date(body.scannedAt) : new Date();
