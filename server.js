@@ -238,7 +238,7 @@ const server = http.createServer(async (req, res) => {
       if (index < 0) return json(res, 404, { error: 'Record scan tidak ditemukan.' });
       const record = rows[index]; if (record.recordStatus === 'cancelled') return json(res, 409, { error: 'Record scan sudah dibatalkan dan tidak dapat diubah.' });
       const now = new Date();
-      if (body.action === 'cancel') {
+      if (body.action === 'cancel' || body.action === 'cancelScan') {
         const reason = String(body.cancelReason || '').trim(); if (!reason) return json(res, 400, { error: 'Alasan pembatalan wajib dipilih.' });
         rows[index] = { ...record, recordStatus: 'cancelled', cancelledAt: now.toISOString(), cancelledBy: String(body.cancelledBy || 'Wali Kelas'), cancelReason: reason, updatedAt: now.toISOString(), updatedBy: String(body.updatedBy || body.cancelledBy || 'Wali Kelas') };
         saveSubmissions(rows); return json(res, 200, { success: true, message: 'Scan berhasil dibatalkan', submission: rows[index] });
@@ -246,7 +246,9 @@ const server = http.createServer(async (req, res) => {
       const week = body.weekNumber == null ? weekFromNumber(record.weekNumber) : weekFromNumber(body.weekNumber);
       if (!week) return json(res, 400, { error: 'Week tugas tidak valid.' });
       const inputParts = zonedParts(record.scannedAt || now); const inputDate = `${inputParts.year}-${inputParts.month}-${inputParts.day}`; const inputStatus = inputDate > week.end ? 'late' : 'on_time';
-      const requestedTaskCount = body.taskCount == null ? Number(record.taskCount || 1) : Math.max(1, Math.min(2, Number(body.taskCount) || 1));
+      const requestedTaskCount = body.taskCount == null && body.taskQuantity == null
+        ? Number(record.taskCount || 1)
+        : Math.max(1, Math.min(2, Number(body.taskCount ?? body.taskQuantity) || 1));
       const updated = { ...record, weekNumber: week.weekNumber, weekStart: week.start, weekEnd: week.end, weekStartDate: week.start, weekEndDate: week.end, taskCount: requestedTaskCount, inputStatus, inputStatusLabel: inputStatus === 'late' ? 'Input Terlambat' : 'Tepat Waktu', updatedAt: now.toISOString(), updatedBy: String(body.updatedBy || 'Wali Kelas') };
       rows[index] = updated;
       if (requestedTaskCount === 1 && Number(record.taskCount || 1) > 1 && record.scanGroupId) {

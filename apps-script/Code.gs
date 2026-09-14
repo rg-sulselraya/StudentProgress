@@ -86,6 +86,11 @@ function existingScans_(sheet) {
 }
 function locateScanRecord_(sheet, recordId, info) {
   const values = sheet.getDataRange().getDisplayValues(); const c = info.columns; const wanted = String(recordId || '').trim();
+  const legacyMatch = wanted.match(/^legacy-row-(\d+)$/);
+  if (legacyMatch) {
+    const rowNumber = Number(legacyMatch[1]);
+    if (Number.isInteger(rowNumber) && rowNumber >= 2 && rowNumber <= values.length) return {rowNumber, row:values[rowNumber - 1]};
+  }
   for (let i = 1; i < values.length; i++) { const current = valueAt_(values[i], c.recordId) || `legacy-row-${i + 1}`; if (current === wanted) return {rowNumber:i + 1, row:values[i]}; }
   return null;
 }
@@ -95,7 +100,10 @@ function mutateScan_(body) {
   if (!recordId) return {success:false,message:'recordId wajib diisi.'};
   const sheet = scanSheet_(); const info = ensureScanMetadataColumns_(sheet); const c = info.columns; const found = locateScanRecord_(sheet, recordId, info);
   if (!found) { console.log('[SCAN MUTATION] record not found', recordId); return {success:false,message:'Record tidak ditemukan.'}; }
-  const current = existingScans_(sheet).find(row => row.recordId === recordId); if (!current) return {success:false,message:'Record tidak ditemukan.'};
+  const records = existingScans_(sheet);
+  const legacyIndex = /^legacy-row-(\d+)$/.test(recordId) ? Number(recordId.slice('legacy-row-'.length)) - 2 : -1;
+  const current = legacyIndex >= 0 ? records[legacyIndex] : records.find(row => row.recordId === recordId);
+  if (!current) return {success:false,message:'Record tidak ditemukan.'};
   if (current.recordStatus === 'cancelled') return {success:false,message:'Record sudah dibatalkan dan tidak dapat diubah.'};
   const now = new Date();
   if (action === 'cancelScan' || action === 'cancel') {
@@ -105,6 +113,9 @@ function mutateScan_(body) {
   if (action !== 'editScan' && action !== 'edit') return {success:false,message:'Action scan tidak dikenali.'};
   const week = weekFromNumber_(Number(body.weekNumber)); if (!week) return {success:false,message:'Week tugas tidak valid.'};
   const taskCount = Math.max(1, Math.min(2, Number(body.taskQuantity ?? body.taskCount) || current.taskCount || 1));
+  // Legacy rows may be addressed as legacy-row-N until metadata columns are
+  // materialized. Preserve that lookup while assigning a stable ID for future
+  // edits; do not re-read and lose the current record after writing the ID.
   if (c.recordId >= 0 && !valueAt_(found.row, c.recordId)) setCell_(sheet, found.rowNumber, c.recordId, Utilities.getUuid());
   const values = sheet.getDataRange().getDisplayValues();
   const groupId = current.scanGroupId || `single-${recordId}`;
